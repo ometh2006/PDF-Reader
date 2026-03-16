@@ -12,6 +12,9 @@ on:
 permissions:
   contents: write      # Needed to create releases
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Suppress Node.js 20 deprecation warning
+
 jobs:
   build-windows:
     name: Build Windows EXE
