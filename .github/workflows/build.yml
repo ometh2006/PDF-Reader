@@ -1,0 +1,155 @@
+name: Build LitePDF for Windows
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - "v*"           # Trigger a release on version tags like v1.0.0
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:   # Allow manual runs from GitHub Actions UI
+
+permissions:
+  contents: write      # Needed to create releases
+
+jobs:
+  build-windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup ──────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # ── 3. Install dependencies ──────────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 4. Generate icon (optional, uses Python if no icon.ico present) ──
+      - name: Generate placeholder icon
+        shell: python
+        run: |
+          import os
+          if not os.path.exists("icon.ico"):
+              from PIL import Image, ImageDraw
+              img = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+              d = ImageDraw.Draw(img)
+              d.rectangle([20, 10, 200, 240], fill="#1e1e2e", outline="#cba6f7", width=6)
+              d.rectangle([50, 60, 170, 75],  fill="#cba6f7")
+              d.rectangle([50, 95, 170, 110], fill="#cba6f7")
+              d.rectangle([50, 130, 130, 145],fill="#cba6f7")
+              sizes = [(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)]
+              frames = [img.resize(s, Image.LANCZOS) for s in sizes]
+              frames[0].save("icon.ico", format="ICO", sizes=sizes,
+                             append_images=frames[1:])
+              print("icon.ico generated")
+          else:
+              print("icon.ico already present, skipping")
+
+      # ── 5. Write Windows version-info resource ───────────────────────────
+      - name: Write version_info.txt
+        shell: python
+        run: |
+          ref = "${{ github.ref_name }}"
+          # Parse semver from tag like v1.2.3, fallback to 1.0.0
+          import re
+          m = re.match(r"v?(\d+)\.(\d+)\.(\d+)", ref)
+          major, minor, patch = (m.group(1,2,3) if m else ("1","0","0"))
+          content = f"""
+          VSVersionInfo(
+            ffi=FixedFileInfo(
+              filevers=({major}, {minor}, {patch}, 0),
+              prodvers=({major}, {minor}, {patch}, 0),
+              mask=0x3f, flags=0x0, OS=0x40004,
+              fileType=0x1, subtype=0x0,
+              date=(0, 0)
+            ),
+            kids=[
+              StringFileInfo([
+                StringTable('040904B0', [
+                  StringStruct('CompanyName',      'LitePDF'),
+                  StringStruct('FileDescription',  'Lightweight PDF Reader & Editor'),
+                  StringStruct('FileVersion',      '{major}.{minor}.{patch}.0'),
+                  StringStruct('InternalName',     'LitePDF'),
+                  StringStruct('LegalCopyright',   '2024 LitePDF'),
+                  StringStruct('OriginalFilename', 'LitePDF.exe'),
+                  StringStruct('ProductName',      'LitePDF'),
+                  StringStruct('ProductVersion',   '{major}.{minor}.{patch}.0'),
+                ])
+              ]),
+              VarFileInfo([VarStruct('Translation', [0x0409, 1200])])
+            ]
+          )
+          """
+          with open("version_info.txt", "w") as f:
+              f.write(content)
+          print(f"version_info.txt written for v{major}.{minor}.{patch}")
+
+      # ── 6. Build with PyInstaller ─────────────────────────────────────────
+      - name: Build EXE with PyInstaller
+        run: |
+          pyinstaller litepdf.spec --clean --noconfirm
+
+      # ── 7. Verify output ──────────────────────────────────────────────────
+      - name: Verify output
+        shell: pwsh
+        run: |
+          $exe = "dist\LitePDF.exe"
+          if (Test-Path $exe) {
+            $size = (Get-Item $exe).Length / 1MB
+            Write-Host "✅ Build successful: $exe ($([math]::Round($size,1)) MB)"
+          } else {
+            Write-Error "❌ Build failed — EXE not found"
+            exit 1
+          }
+
+      # ── 8. Upload artifact (every build) ─────────────────────────────────
+      - name: Upload EXE as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LitePDF-Windows
+          path: dist/LitePDF.exe
+          retention-days: 30
+
+      # ── 9. Create GitHub Release (tagged builds only) ────────────────────
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/LitePDF.exe
+          name: "LitePDF ${{ github.ref_name }}"
+          body: |
+            ## LitePDF ${{ github.ref_name }}
+
+            ### 🪶 Lightweight PDF Reader & Editor for Windows
+
+            **Download** `LitePDF.exe` below — no installer, no dependencies needed.
+
+            ### Features
+            - 📖 View PDFs with smooth zoom (50 %–300 %) and pan
+            - 🗂️ Page sidebar for quick navigation
+            - ↩️ Rotate pages CW / CCW
+            - ✏️ Add text annotations directly on pages
+            - 📋 Extract page text to a scrollable window
+            - 🔗 Merge multiple PDFs into one
+            - ✂️ Split a PDF into individual pages
+            - 🔐 Password-protect & encrypt (AES-256)
+            - 💾 Save a clean copy
+            - ⌨️ Keyboard-first shortcuts
+
+            ### System Requirements
+            - Windows 10 / 11 (64-bit)
+            - ~30 MB RAM idle, <5 % CPU while reading
+          generate_release_notes: true
+          draft: false
+          prerelease: false
